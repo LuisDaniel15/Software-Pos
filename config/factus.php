@@ -39,3 +39,9 @@ return [
         'sleep' => 1000, // milisegundos
     ],
 ];
+
+
+
+// php artisan config:clear
+// php artisan cache:clear
+// php artisan config:cache
