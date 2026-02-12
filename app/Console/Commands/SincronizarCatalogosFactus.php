@@ -215,74 +215,63 @@ class SincronizarCatalogosFactus extends Command
     }
 
     protected function sincronizarRangosNumeracion()
-    {
-        $this->info('🔢 Sincronizando rangos de numeración...');
+{
+    $this->info('🔢 Sincronizando rangos de numeración...');
 
-        $response = $this->factusService->getRangosNumeracion();
+    $response = $this->factusService->getRangosNumeracion();
 
-        if (!$response->successful()) {
-            throw new \Exception('Error al obtener rangos: ' . $response->body());
-        }
+    if (!$response->successful()) {
+        throw new \Exception('Error al obtener rangos: ' . $response->body());
+    }
 
-        $data = $response->json();
-        $rangos = $data['data']['data'] ?? [];
+    $data = $response->json();
+    $rangos = $data['data']['data'] ?? [];
 
-        $bar = $this->output->createProgressBar(count($rangos));
-        $bar->start();
+    $bar = $this->output->createProgressBar(count($rangos));
+    $bar->start();
 
-        $insertados = 0;
-        $actualizados = 0;
+    $insertados = 0;
+    $actualizados = 0;
 
-        foreach ($rangos as $rango) {
-            // Buscar por prefijo + document
-            $existe = DB::table('rangos_numeracion')
+    foreach ($rangos as $rango) {
+        // Buscar por prefijo + document
+        $existe = DB::table('rangos_numeracion')
+            ->where('prefijo', $rango['prefix'])
+            ->where('document', $rango['document'])
+            ->exists();
+
+        $rangoData = [
+            'document' => $rango['document'],
+            'prefijo' => $rango['prefix'],
+            'desde' => $rango['from'],                    // ✅ Puede ser null
+            'hasta' => $rango['to'],                      // ✅ Puede ser null
+            'consecutivo_actual' => $rango['current'] ?? 0,
+            'numero_resolucion' => $rango['resolution_number'],
+            'fecha_inicio' => $rango['start_date'],       // ✅ Puede ser null
+            'fecha_fin' => $rango['end_date'],            // ✅ Puede ser null
+            'technical_key' => $rango['technical_key'],
+            'is_expired' => $rango['is_expired'] ?? false,
+            'is_active' => $rango['is_active'] ?? 1,
+            'updated_at' => now(),
+        ];
+
+        if ($existe) {
+            DB::table('rangos_numeracion')
                 ->where('prefijo', $rango['prefix'])
                 ->where('document', $rango['document'])
-                ->exists();
-
-            $rangoData = [
-                'document' => $rango['document'],
-                'prefijo' => $rango['prefix'],
-                'desde' => isset($rango['from']) && $rango['from'] !== null
-                        ? $rango['from']
-                        : 0,
-                'hasta' => isset($rango['to']) && $rango['to'] !== null
-                            ? $rango['to']
-                            : 0,
-                'consecutivo_actual' => $rango['current'],
-                'numero_resolucion' => $rango['resolution_number'],
-
-                'fecha_inicio' => !empty($rango['start_date'])
-                    ? $rango['start_date']
-                    : '1900-01-01',
-
-                'fecha_fin' => !empty($rango['end_date'])
-                    ? $rango['end_date']
-                    : '1900-01-01',
-
-                'technical_key' => $rango['technical_key'],
-                'is_expired' => $rango['is_expired'],
-                'is_active' => $rango['is_active'],
-                'updated_at' => now(),
-            ];
-
-            if ($existe) {
-                DB::table('rangos_numeracion')
-                    ->where('prefijo', $rango['prefix'])
-                    ->where('document', $rango['document'])
-                    ->update($rangoData);
-                $actualizados++;
-            } else {
-                $rangoData['created_at'] = now();
-                DB::table('rangos_numeracion')->insert($rangoData);
-                $insertados++;
-            }
-
-            $bar->advance();
+                ->update($rangoData);
+            $actualizados++;
+        } else {
+            $rangoData['created_at'] = now();
+            DB::table('rangos_numeracion')->insert($rangoData);
+            $insertados++;
         }
 
-        $bar->finish();
-        $this->newLine();
-        $this->line("   ✓ Insertados: {$insertados} | Actualizados: {$actualizados}");
+        $bar->advance();
     }
+
+    $bar->finish();
+    $this->newLine();
+    $this->line("   ✓ Insertados: {$insertados} | Actualizados: {$actualizados}");
+}
 }
