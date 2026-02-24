@@ -15,6 +15,7 @@ class Caja extends Model
         'nombre',
         'establecimiento_id',
         'activa',
+        'sucursal_id',
     ];
 
     protected $casts = [
@@ -24,6 +25,19 @@ class Caja extends Model
     ];
 
     // Relaciones
+
+public function sucursal(): BelongsTo
+    {
+        return $this->belongsTo(Sucursal::class);
+    }
+
+    // SCOPES (agregar)
+    public function scopePorSucursal($query, int $sucursalId)
+    {
+        return $query->where('sucursal_id', $sucursalId);
+    }
+
+
     public function establecimiento(): BelongsTo
     {
         return $this->belongsTo(Establecimiento::class);

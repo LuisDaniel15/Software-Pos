@@ -296,4 +296,15 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('arqueos-caja', [ReporteController::class, 'arqueosCaja'])
             ->middleware('permission:reportes.caja');
     });
+
+    // Sucursales
+Route::prefix('sucursales')->middleware('auth:sanctum')->group(function () {
+    Route::get('/', [SucursalController::class, 'index'])
+        ->middleware('permission:sucursales.ver');
+    
+    Route::get('/actual', [SucursalController::class, 'sucursalActual']);
+    
+    Route::get('/{id}', [SucursalController::class, 'show'])
+        ->middleware('permission:sucursales.ver');
+});
 });

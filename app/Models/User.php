@@ -7,6 +7,7 @@ use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class User extends Authenticatable
 {
@@ -19,6 +20,7 @@ class User extends Authenticatable
         'password',
         'rol',
         'activo',
+        'sucursal_id', // ← AGREGAR
     ];
 
     protected $hidden = [
@@ -315,5 +317,28 @@ class User extends Authenticatable
             $datosAnteriores,
             $datosNuevos
         );
+    }
+
+ public function sucursal(): BelongsTo
+    {
+        return $this->belongsTo(Sucursal::class);
+    }
+
+    // =====================================
+    // SCOPES (agregar)
+    // =====================================
+
+    public function scopePorSucursal($query, int $sucursalId)
+    {
+        return $query->where('sucursal_id', $sucursalId);
+    }
+
+    // =====================================
+    // ACCESSORS (agregar)
+    // =====================================
+
+    public function getSucursalNombreAttribute(): ?string
+    {
+        return $this->sucursal?->nombre;
     }
 }
