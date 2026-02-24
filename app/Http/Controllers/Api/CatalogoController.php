@@ -208,6 +208,8 @@ class CatalogoController extends Controller
                 ->distinct()
                 ->orderBy('departamento')
                 ->pluck('departamento'),
+            'unidades_medida' => UnidadMedida::all(),
+            'rangos_numeracion' => RangoNumeracion::all(),  
         ]);
     }
 }

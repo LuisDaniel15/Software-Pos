@@ -121,43 +121,24 @@ class User extends Authenticatable
         return $this->turno_activo !== null;
     }
 
-    // Métodos
+    // Métodos de Permisos
     public function puedeAcceder(string $permiso): bool
     {
-        // Lógica de permisos según rol
-        $permisos = [
-            'admin' => ['*'], // Todos los permisos
-            'supervisor' => [
-                'ventas.*',
-                'productos.*',
-                'clientes.*',
-                'caja.ver',
-                'reportes.*',
-            ],
-            'cajero' => [
-                'ventas.crear',
-                'ventas.ver',
-                'productos.ver',
-                'clientes.ver',
-                'clientes.crear',
-                'caja.*',
-            ],
-        ];
-
-        $permisosRol = $permisos[$this->rol] ?? [];
-
         // Admin tiene todos los permisos
-        if (in_array('*', $permisosRol)) {
+        if ($this->es_admin) {
             return true;
         }
 
-        // Verificar permiso específico o con wildcard
-        foreach ($permisosRol as $permisoRol) {
-            if ($permisoRol === $permiso) {
-                return true;
-            }
+        // Obtener permisos del rol
+        $permisosRol = $this->getPermisosDelRol();
 
-            // Verificar wildcard (ej: ventas.* coincide con ventas.crear)
+        // Verificar si tiene el permiso exacto
+        if (in_array($permiso, $permisosRol)) {
+            return true;
+        }
+
+        // Verificar permisos con wildcard (ej: ventas.* incluye ventas.crear)
+        foreach ($permisosRol as $permisoRol) {
             if (str_ends_with($permisoRol, '.*')) {
                 $base = str_replace('.*', '', $permisoRol);
                 if (str_starts_with($permiso, $base)) {
@@ -167,6 +148,156 @@ class User extends Authenticatable
         }
 
         return false;
+    }
+
+    /**
+     * Obtener todos los permisos del rol del usuario
+     */
+    public function getPermisosDelRol(): array
+    {
+        $permisos = [
+            'admin' => [
+                // Acceso total
+                '*',
+            ],
+            'supervisor' => [
+                // Ventas
+                'ventas.ver',
+                'ventas.crear',
+                'ventas.detalle',
+                'ventas.reintentar',
+                
+                // Productos
+                'productos.*',
+                
+                // Clientes
+                'clientes.*',
+                
+                // Inventario
+                'inventario.ver',
+                'inventario.entrada',
+                'inventario.salida',
+                'inventario.ajuste',
+                
+                // Caja
+                'caja.ver',
+                'caja.turnos.ver',
+                'caja.movimientos.ver',
+                
+                // Reportes
+                'reportes.*',
+                
+                // Catálogos
+                'catalogos.ver',
+            ],
+            'cajero' => [
+                // Ventas (solo crear y ver propias)
+                'ventas.crear',
+                'ventas.ver',
+                'ventas.detalle',
+                
+                // Productos (solo consultar)
+                'productos.ver',
+                'productos.buscar',
+                
+                // Clientes
+                'clientes.ver',
+                'clientes.crear',
+                'clientes.buscar',
+                
+                // Caja (todas las operaciones)
+                'caja.abrir',
+                'caja.cerrar',
+                'caja.movimientos.crear',
+                'caja.turnos.ver',
+                
+                // Catálogos (solo consultar)
+                'catalogos.ver',
+                
+                // Reportes básicos
+                'reportes.dashboard',
+                'reportes.turno',
+            ],
+        ];
+
+        return $permisos[$this->rol] ?? [];
+    }
+
+    /**
+     * Obtener permisos en formato legible
+     */
+    public function getPermisosFormateados(): array
+    {
+        $permisos = $this->getPermisosDelRol();
+        
+        if (in_array('*', $permisos)) {
+            return ['Acceso total al sistema'];
+        }
+
+        $formateados = [];
+        
+        foreach ($permisos as $permiso) {
+            $formateados[] = $this->formatearPermiso($permiso);
+        }
+
+        return $formateados;
+    }
+
+    /**
+     * Formatear permiso para mostrar
+     */
+    protected function formatearPermiso(string $permiso): string
+    {
+        $traducciones = [
+            'ventas.ver' => 'Ver ventas',
+            'ventas.crear' => 'Crear ventas',
+            'ventas.detalle' => 'Ver detalle de ventas',
+            'ventas.reintentar' => 'Reintentar facturación',
+            'ventas.*' => 'Gestión completa de ventas',
+            
+            'productos.ver' => 'Ver productos',
+            'productos.crear' => 'Crear productos',
+            'productos.editar' => 'Editar productos',
+            'productos.buscar' => 'Buscar productos',
+            'productos.*' => 'Gestión completa de productos',
+            
+            'clientes.ver' => 'Ver clientes',
+            'clientes.crear' => 'Crear clientes',
+            'clientes.editar' => 'Editar clientes',
+            'clientes.buscar' => 'Buscar clientes',
+            'clientes.*' => 'Gestión completa de clientes',
+            
+            'inventario.ver' => 'Ver inventario',
+            'inventario.entrada' => 'Registrar entradas',
+            'inventario.salida' => 'Registrar salidas',
+            'inventario.ajuste' => 'Ajustar inventario',
+            'inventario.*' => 'Gestión completa de inventario',
+            
+            'caja.abrir' => 'Abrir caja',
+            'caja.cerrar' => 'Cerrar caja',
+            'caja.ver' => 'Ver cajas',
+            'caja.movimientos.crear' => 'Registrar movimientos de caja',
+            'caja.movimientos.ver' => 'Ver movimientos de caja',
+            'caja.turnos.ver' => 'Ver turnos de caja',
+            'caja.*' => 'Gestión completa de caja',
+            
+            'usuarios.ver' => 'Ver usuarios',
+            'usuarios.crear' => 'Crear usuarios',
+            'usuarios.editar' => 'Editar usuarios',
+            'usuarios.eliminar' => 'Eliminar usuarios',
+            'usuarios.*' => 'Gestión completa de usuarios',
+            
+            'reportes.dashboard' => 'Ver dashboard',
+            'reportes.ventas' => 'Reportes de ventas',
+            'reportes.turno' => 'Reportes de turno',
+            'reportes.*' => 'Todos los reportes',
+            
+            'catalogos.ver' => 'Ver catálogos',
+            
+            'configuracion.*' => 'Configuración del sistema',
+        ];
+
+        return $traducciones[$permiso] ?? $permiso;
     }
 
     public function registrarAuditoria(
@@ -186,88 +317,3 @@ class User extends Authenticatable
         );
     }
 }
-// ```
-
-// ---
-
-// ## ✅ TODOS LOS MODELOS COMPLETADOS
-
-// ---
-
-// ## 🎉 RESUMEN TOTAL DE MODELOS
-
-// ### **Grupo 1: Catálogos (12 modelos)** ✅
-// 1. Municipio
-// 2. UnidadMedida
-// 3. Tributo
-// 4. TipoDocumentoIdentidad
-// 5. TipoOrganizacion
-// 6. MetodoPago
-// 7. FormaPago
-// 8. CodigoEstandar
-// 9. TipoDocumentoFactura
-// 10. TipoOperacion
-// 11. RangoNumeracion
-// 12. TributoCliente
-
-// ### **Grupo 2: Empresa y Config (4 modelos)** ✅
-// 13. Empresa
-// 14. Establecimiento
-// 15. ConfiguracionFactus
-// 16. TokenFactus
-
-// ### **Grupo 3: Negocio (6 modelos)** ✅
-// 17. Cliente
-// 18. Categoria
-// 19. Producto
-// 20. Kardex
-// 21. Caja
-// 22. TurnoCaja
-
-// ### **Grupo 4: Ventas (9 modelos)** ✅
-// 23. Venta
-// 24. DetalleVenta
-// 25. MovimientoCaja
-// 26. RetencionDetalleVenta
-// 27. RetencionVenta
-// 28. DescuentoRecargoVenta
-// 29. DocumentoRelacionado
-// 30. NotaCredito
-// 31. Mandato
-
-// ### **Grupo 5: Sistema (3 modelos)** ✅
-// 32. User
-// 33. LogIntegracionFactus
-// 34. AuditoriaAccion
-
-// ---
-
-// ## 📊 CARACTERÍSTICAS DE TODOS LOS MODELOS
-
-// ✅ **34 modelos Eloquent completos**
-// ✅ **Fillable/Hidden definidos**
-// ✅ **Casts para todos los tipos de datos**
-// ✅ **80+ relaciones (BelongsTo, HasMany, HasOne)**
-// ✅ **150+ Scopes para consultas comunes**
-// ✅ **100+ Accessors para cálculos y estados**
-// ✅ **Métodos de negocio específicos**
-// ✅ **Validaciones de estado**
-// ✅ **SoftDeletes donde corresponde**
-// ✅ **Sistema de permisos básico (User)**
-// ✅ **Auditoría integrada**
-
-// ---
-
-// ## 🎯 ESTADO DEL PROYECTO
-// ```
-// ✅ SEMANA 1 - COMPLETADA
-//    - Setup Laravel 12
-//    - 35 tablas en BD
-//    - Catálogos poblados
-//    - Factus sincronizado
-
-// ✅ SEMANA 2 - COMPLETADA
-//    - 34 modelos Eloquent
-//    - Relaciones completas
-//    - Scopes y Accessors
-//    - Métodos de negocio

@@ -67,18 +67,20 @@ class AuthController extends Controller
      * Usuario autenticado
      */
     public function me(Request $request)
-    {
-        $user = $request->user();
+{
+    $user = $request->user();
 
-        return response()->json([
-            'user' => [
-                'id' => $user->id,
-                'nombre' => $user->nombre,
-                'email' => $user->email,
-                'rol' => $user->rol,
-                'turno_activo' => $user->turno_activo,
-                'tiene_turno_abierto' => $user->tiene_turno_abierto,
-            ],
-        ]);
-    }
+    return response()->json([
+        'user' => [
+            'id' => $user->id,
+            'nombre' => $user->nombre,
+            'email' => $user->email,
+            'rol' => $user->rol,
+            'turno_activo' => $user->turno_activo,
+            'tiene_turno_abierto' => $user->tiene_turno_abierto,
+            'permisos' => $user->getPermisosDelRol(),
+            'permisos_formateados' => $user->getPermisosFormateados(),
+        ],
+    ]);
+}
 }
