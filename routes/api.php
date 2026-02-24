@@ -108,38 +108,55 @@ Route::middleware('auth:sanctum')->group(function () {
     // ========================================
     // CAJA
     // ========================================
-    Route::prefix('caja')->group(function () {
-        // Cajas
-        Route::get('cajas-disponibles', [CajaController::class, 'cajasDisponibles'])
-            ->middleware('permission:caja.ver');
-        
-        // Turnos
-        Route::get('turno-activo', [CajaController::class, 'turnoActivo'])
-            ->middleware('permission:caja.turnos.ver');
-            
-        Route::post('abrir-turno', [CajaController::class, 'abrirTurno'])
-            ->middleware('permission:caja.abrir');
-            
-        Route::post('turnos/{id}/cerrar', [CajaController::class, 'cerrarTurno'])
-            ->middleware('permission:caja.cerrar');
-            
-        Route::get('turnos/{id}/resumen', [CajaController::class, 'resumenTurno'])
-            ->middleware('permission:caja.turnos.ver');
-            
-        Route::get('turnos-del-dia', [CajaController::class, 'turnosDelDia'])
-            ->middleware('permission:caja.turnos.ver');
-            
-        Route::get('turnos/historial', [CajaController::class, 'historial'])
-            ->middleware('permission:caja.ver');
-        
-        // Movimientos
-        Route::post('movimientos/ingreso', [CajaController::class, 'registrarIngreso'])
-            ->middleware('permission:caja.movimientos.crear');
-            
-        Route::post('movimientos/egreso', [CajaController::class, 'registrarEgreso'])
-            ->middleware('permission:caja.movimientos.crear');
-    });
-
+   Route::prefix('caja')->group(function () {
+    // Cajas
+    Route::get('cajas', [CajaController::class, 'listarCajas'])
+        ->middleware('permission:caja.ver');
+    
+    Route::get('cajas-disponibles', [CajaController::class, 'cajasDisponibles'])
+        ->middleware('permission:caja.ver');
+    
+    // Turnos
+    Route::get('turno-actual', [CajaController::class, 'turnoActivo'])
+        ->middleware('permission:caja.turnos.ver');
+    
+    Route::post('abrir-turno', [CajaController::class, 'abrirTurno'])
+        ->middleware('permission:caja.abrir');
+    
+    Route::post('cerrar-turno', [CajaController::class, 'cerrarTurnoActual'])
+        ->middleware('permission:caja.cerrar');
+    
+    Route::post('turnos/{id}/cerrar', [CajaController::class, 'cerrarTurno'])
+        ->middleware('permission:caja.cerrar');
+    
+    Route::get('turnos', [CajaController::class, 'listarTurnos'])
+        ->middleware('permission:caja.turnos.ver');
+    
+    Route::get('turnos/{id}', [CajaController::class, 'obtenerTurno'])
+        ->middleware('permission:caja.turnos.ver');
+    
+    Route::get('turnos/{id}/resumen', [CajaController::class, 'resumenTurno'])
+        ->middleware('permission:caja.turnos.ver');
+    
+    Route::get('turnos-del-dia', [CajaController::class, 'turnosDelDia'])
+        ->middleware('permission:caja.turnos.ver');
+    
+    Route::get('turnos/historial', [CajaController::class, 'historial'])
+        ->middleware('permission:caja.ver');
+    
+    // Movimientos
+    Route::get('turnos/{turnoId}/movimientos', [CajaController::class, 'listarMovimientos'])
+        ->middleware('permission:caja.turnos.ver');
+    
+    Route::post('movimientos', [CajaController::class, 'crearMovimiento'])
+        ->middleware('permission:caja.movimientos.crear');
+    
+    Route::post('movimientos/ingreso', [CajaController::class, 'registrarIngreso'])
+        ->middleware('permission:caja.movimientos.crear');
+    
+    Route::post('movimientos/egreso', [CajaController::class, 'registrarEgreso'])
+        ->middleware('permission:caja.movimientos.crear');
+});
     // ========================================
     // INVENTARIO
     // ========================================

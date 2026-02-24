@@ -244,4 +244,178 @@ class CajaController extends Controller
 
         return response()->json($turnos);
     }
+    /**
+ * Listar todos los turnos (sin paginación, con filtros)
+ */
+public function listarTurnos(Request $request)
+{
+    $query = TurnoCaja::with(['caja', 'usuario'])
+        ->orderBy('fecha_apertura', 'desc');
+
+    // Filtro por búsqueda (usuario o caja)
+    if ($request->filled('search')) {
+        $search = $request->search;
+        $query->where(function($q) use ($search) {
+            $q->whereHas('usuario', function($q2) use ($search) {
+                $q2->where('nombre', 'ILIKE', "%{$search}%");
+            })
+            ->orWhereHas('caja', function($q2) use ($search) {
+                $q2->where('nombre', 'ILIKE', "%{$search}%");
+            });
+        });
+    }
+
+    // Filtro por estado
+    if ($request->filled('estado')) {
+        $query->where('estado', $request->estado);
+    }
+
+    $turnos = $query->get();
+
+    // Calcular totales para cada turno
+    foreach ($turnos as $turno) {
+        $turno->total_ventas = $turno->ventas()->sum('total') ?? '0.00';
+        $turno->total_ingresos = $turno->movimientos()
+            ->where('tipo', 'ingreso')
+            ->sum('monto') ?? '0.00';
+        $turno->total_egresos = $turno->movimientos()
+            ->where('tipo', 'egreso')
+            ->sum('monto') ?? '0.00';
+    }
+
+    return response()->json([
+        'data' => $turnos
+    ]);
+}
+
+/**
+ * Obtener un turno específico
+ */
+public function obtenerTurno(int $id)
+{
+    $turno = TurnoCaja::with(['caja', 'usuario'])->findOrFail($id);
+
+    // Calcular totales
+    $turno->total_ventas = $turno->ventas()->sum('total') ?? '0.00';
+    $turno->total_ingresos = $turno->movimientos()
+        ->where('tipo', 'ingreso')
+        ->sum('monto') ?? '0.00';
+    $turno->total_egresos = $turno->movimientos()
+        ->where('tipo', 'egreso')
+        ->sum('monto') ?? '0.00';
+
+    return response()->json($turno);
+}
+
+/**
+ * Listar movimientos de un turno
+ */
+public function listarMovimientos(int $turnoId)
+{
+    $movimientos = MovimientoCaja::where('turno_caja_id', $turnoId)
+        ->with(['metodoPago', 'usuario', 'venta'])
+        ->orderBy('created_at', 'desc')
+        ->get();
+
+    return response()->json($movimientos);
+}
+
+/**
+ * Crear movimiento (ingreso o egreso unificado)
+ */
+public function crearMovimiento(Request $request)
+{
+    try {
+        $validated = $request->validate([
+            'tipo' => 'required|in:ingreso,egreso',
+            'metodo_pago_id' => 'required|exists:metodos_pago,id',
+            'concepto' => 'required|string|max:255',
+            'monto' => 'required|numeric|min:0',
+            'referencia' => 'nullable|string|max:100',
+        ]);
+
+        // Obtener turno activo del usuario
+        $turno = TurnoCaja::abiertos()
+            ->where('usuario_id', $request->user()->id)
+            ->firstOrFail();
+
+        // Crear movimiento según el tipo
+        if ($validated['tipo'] === 'ingreso') {
+            $movimiento = $this->cajaService->registrarIngreso(
+                $turno->id,
+                $validated['monto'],
+                $validated['concepto'],
+                $validated['metodo_pago_id'],
+                $request->user()->id,
+                $validated['referencia'] ?? null
+            );
+        } else {
+            $movimiento = $this->cajaService->registrarEgreso(
+                $turno->id,
+                $validated['monto'],
+                $validated['concepto'],
+                $validated['metodo_pago_id'],
+                $request->user()->id,
+                $validated['referencia'] ?? null
+            );
+        }
+
+        $movimiento->load(['metodoPago', 'usuario']);
+
+        return response()->json([
+            'message' => 'Movimiento registrado exitosamente',
+            'movimiento' => $movimiento
+        ], 201);
+
+    } catch (Exception $e) {
+        return response()->json([
+            'message' => 'Error al registrar movimiento',
+            'error' => $e->getMessage(),
+        ], 400);
+    }
+}
+
+/**
+ * Listar cajas (alias para mantener compatibilidad)
+ */
+public function listarCajas()
+{
+    return $this->cajasDisponibles();
+}
+
+/**
+ * Cerrar turno actual del usuario autenticado
+ */
+public function cerrarTurnoActual(Request $request)
+{
+    try {
+        $validated = $request->validate([
+            'monto_cierre' => 'required|numeric|min:0',
+            'observaciones_cierre' => 'nullable|string|max:500',
+        ]);
+
+        // Obtener turno activo del usuario
+        $turno = TurnoCaja::abiertos()
+            ->where('usuario_id', $request->user()->id)
+            ->firstOrFail();
+
+        // Cerrar el turno
+        $turnoCerrado = $this->cajaService->cerrarTurno(
+            $turno->id,
+            $validated['monto_cierre'],
+            $validated['observaciones_cierre'] ?? null
+        );
+
+        return response()->json([
+            'message' => 'Turno cerrado exitosamente',
+            'turno' => $turnoCerrado,
+        ]);
+
+    } catch (Exception $e) {
+        return response()->json([
+            'message' => 'Error al cerrar turno',
+            'error' => $e->getMessage(),
+        ], 400);
+    }
+}
 }
