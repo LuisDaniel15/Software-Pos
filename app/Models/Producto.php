@@ -179,4 +179,80 @@ class Producto extends Model
             'tribute_id' => $this->tributo_id,
         ];
     }
+
+
+     // =====================================
+    // RELACIONES (agregar)
+    // =====================================
+
+    public function inventarios(): HasMany
+    {
+        return $this->hasMany(Inventario::class);
+    }
+
+    /**
+     * Obtener inventario de una sucursal específica
+     */
+    public function inventarioEnSucursal(int $sucursalId): ?Inventario
+    {
+        return $this->inventarios()
+            ->where('sucursal_id', $sucursalId)
+            ->first();
+    }
+
+    /**
+     * Obtener stock en una sucursal
+     */
+    public function stockEnSucursal(int $sucursalId): float
+    {
+        $inventario = $this->inventarioEnSucursal($sucursalId);
+        return $inventario ? $inventario->stock_actual : 0;
+    }
+
+    /**
+     * Verificar si tiene stock en una sucursal
+     */
+    public function tieneStockEnSucursal(int $sucursalId, float $cantidad = 1): bool
+    {
+        return $this->stockEnSucursal($sucursalId) >= $cantidad;
+    }
+
+    /**
+     * Obtener stock total en todas las sucursales
+     */
+    public function getStockTotalAttribute(): float
+    {
+        return $this->inventarios()->sum('stock_actual');
+    }
+
+    /**
+     * Obtener valor total del inventario
+     */
+    public function getValorInventarioTotalAttribute(): float
+    {
+        return $this->inventarios()
+            ->get()
+            ->sum(fn($inv) => $inv->stock_actual * $inv->costo_promedio);
+    }
+
+    // =====================================
+    // SCOPES (agregar)
+    // =====================================
+
+    public function scopeConStockEnSucursal(Builder $query, int $sucursalId): Builder
+    {
+        return $query->whereHas('inventarios', function($q) use ($sucursalId) {
+            $q->where('sucursal_id', $sucursalId)
+              ->where('stock_actual', '>', 0);
+        });
+    }
+
+    public function scopeBajoStockEnSucursal(Builder $query, int $sucursalId): Builder
+    {
+        return $query->whereHas('inventarios', function($q) use ($sucursalId) {
+            $q->where('sucursal_id', $sucursalId)
+              ->whereColumn('stock_actual', '<=', 'stock_minimo')
+              ->where('stock_actual', '>', 0);
+        });
+    }
 }

@@ -3,7 +3,8 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Models\Kardex;
+use App\Models\Inventario;
+use App\Models\MovimientoInventario;
 use App\Services\InventarioService;
 use Illuminate\Http\Request;
 use Exception;
@@ -18,143 +19,297 @@ class InventarioController extends Controller
     }
 
     /**
-     * Registrar entrada de inventario
+     * Obtener resumen de stock de la sucursal del usuario
      */
-    public function registrarEntrada(Request $request)
+    public function resumenStock(Request $request)
+    {
+        $sucursalId = $request->user()->sucursal_id;
+
+        if (!$sucursalId) {
+            return response()->json([
+                'message' => 'Usuario no tiene sucursal asignada'
+            ], 400);
+        }
+
+        $resumen = $this->inventarioService->calcularValorInventario($sucursalId);
+        
+        // Agregar contadores adicionales
+        $productosBajoStock = Inventario::porSucursal($sucursalId)->bajoStock()->count();
+        $productosSinStock = Inventario::porSucursal($sucursalId)->sinStock()->count();
+
+        return response()->json([
+            'total_productos' => $resumen['cantidad_productos'],
+            'productos_bajo_stock' => $productosBajoStock,
+            'productos_sin_stock' => $productosSinStock,
+            'valor_total_inventario' => $resumen['valor_total'],
+            'cantidad_unidades' => $resumen['cantidad_unidades'],
+            'promedio_costo' => $resumen['promedio_costo'],
+        ]);
+    }
+
+    /**
+     * Registrar movimiento de inventario
+     */
+    public function registrarMovimiento(Request $request)
     {
         try {
             $validated = $request->validate([
+                'tipo' => 'required|in:ingreso,egreso',
                 'producto_id' => 'required|exists:productos,id',
-                'cantidad' => 'required|integer|min:1',
-                'referencia_tipo' => 'required|string',
-                'referencia_id' => 'nullable|integer',
+                'cantidad' => 'required|numeric|min:0.01',
                 'costo_unitario' => 'nullable|numeric|min:0',
-                'observacion' => 'nullable|string|max:500',
+                'motivo' => 'required|string|max:255',
+                'referencia' => 'nullable|string|max:100',
             ]);
 
-            $kardex = $this->inventarioService->registrarEntrada(
+            $sucursalId = $request->user()->sucursal_id;
+
+            if (!$sucursalId) {
+                return response()->json([
+                    'message' => 'Usuario no tiene sucursal asignada'
+                ], 400);
+            }
+
+            // Mapear tipo front->back
+            $tipoMovimiento = $validated['tipo'] === 'ingreso' ? 'entrada' : 'salida';
+
+            $resultado = $this->inventarioService->actualizarStock(
                 $validated['producto_id'],
+                $sucursalId,
                 $validated['cantidad'],
-                $validated['referencia_tipo'],
-                $validated['referencia_id'] ?? null,
-                $request->user()->id,
+                $tipoMovimiento,
                 $validated['costo_unitario'] ?? null,
-                $validated['observacion'] ?? null
+                $validated['motivo'],
+                $validated['referencia'] ?? null,
+                $request->user()->id
             );
 
             return response()->json([
-                'message' => 'Entrada registrada exitosamente',
-                'data' => $kardex->load('producto'),
+                'message' => 'Movimiento registrado exitosamente',
+                'movimiento' => $resultado['movimiento'],
+                'inventario' => $resultado['inventario'],
             ], 201);
 
         } catch (Exception $e) {
             return response()->json([
-                'message' => 'Error al registrar entrada',
+                'message' => 'Error al registrar movimiento',
                 'error' => $e->getMessage(),
             ], 400);
         }
     }
 
     /**
-     * Registrar salida de inventario
+     * Trasladar producto entre sucursales
      */
-    public function registrarSalida(Request $request)
+    public function trasladarProducto(Request $request)
     {
         try {
             $validated = $request->validate([
                 'producto_id' => 'required|exists:productos,id',
-                'cantidad' => 'required|integer|min:1',
-                'referencia_tipo' => 'required|string',
-                'referencia_id' => 'nullable|integer',
-                'observacion' => 'nullable|string|max:500',
+                'sucursal_destino_id' => 'required|exists:sucursales,id',
+                'cantidad' => 'required|numeric|min:0.01',
+                'motivo' => 'required|string|max:255',
             ]);
 
-            $kardex = $this->inventarioService->registrarSalida(
+            $sucursalOrigenId = $request->user()->sucursal_id;
+
+            if (!$sucursalOrigenId) {
+                return response()->json([
+                    'message' => 'Usuario no tiene sucursal asignada'
+                ], 400);
+            }
+
+            $resultado = $this->inventarioService->trasladarProducto(
                 $validated['producto_id'],
+                $sucursalOrigenId,
+                $validated['sucursal_destino_id'],
                 $validated['cantidad'],
-                $validated['referencia_tipo'],
-                $validated['referencia_id'] ?? null,
-                $request->user()->id,
-                $validated['observacion'] ?? null
+                $validated['motivo'],
+                $request->user()->id
             );
 
             return response()->json([
-                'message' => 'Salida registrada exitosamente',
-                'data' => $kardex->load('producto'),
+                'message' => 'Traslado realizado exitosamente',
+                'data' => $resultado,
             ], 201);
 
         } catch (Exception $e) {
             return response()->json([
-                'message' => 'Error al registrar salida',
+                'message' => 'Error al realizar traslado',
                 'error' => $e->getMessage(),
             ], 400);
         }
     }
 
     /**
-     * Registrar ajuste de inventario
+     * Ajustar inventario
      */
-    public function registrarAjuste(Request $request)
+    public function ajustarInventario(Request $request)
     {
         try {
             $validated = $request->validate([
                 'producto_id' => 'required|exists:productos,id',
-                'cantidad_nueva' => 'required|integer|min:0',
-                'motivo' => 'required|string|max:500',
+                'nuevo_stock' => 'required|numeric|min:0',
+                'motivo' => 'required|string|max:255',
             ]);
 
-            $kardex = $this->inventarioService->registrarAjuste(
+            $sucursalId = $request->user()->sucursal_id;
+
+            if (!$sucursalId) {
+                return response()->json([
+                    'message' => 'Usuario no tiene sucursal asignada'
+                ], 400);
+            }
+
+            $resultado = $this->inventarioService->registrarAjuste(
                 $validated['producto_id'],
-                $validated['cantidad_nueva'],
-                $request->user()->id,
-                $validated['motivo']
+                $sucursalId,
+                $validated['nuevo_stock'],
+                $validated['motivo'],
+                $request->user()->id
             );
 
             return response()->json([
-                'message' => 'Ajuste registrado exitosamente',
-                'data' => $kardex->load('producto'),
-            ], 201);
+                'message' => 'Inventario ajustado exitosamente',
+                'data' => $resultado,
+            ], 200);
 
         } catch (Exception $e) {
             return response()->json([
-                'message' => 'Error al registrar ajuste',
+                'message' => 'Error al ajustar inventario',
                 'error' => $e->getMessage(),
             ], 400);
         }
+    }
+
+    /**
+     * Listar productos con bajo stock
+     */
+    public function productosBajoStock(Request $request)
+    {
+        $sucursalId = $request->user()->sucursal_id;
+
+        if (!$sucursalId) {
+            return response()->json([
+                'message' => 'Usuario no tiene sucursal asignada'
+            ], 400);
+        }
+
+        $productos = $this->inventarioService->obtenerProductosBajoStock($sucursalId);
+
+        return response()->json([
+            'data' => $productos
+        ]);
+    }
+
+    /**
+     * Listar productos sin stock
+     */
+    public function productosSinStock(Request $request)
+    {
+        $sucursalId = $request->user()->sucursal_id;
+
+        if (!$sucursalId) {
+            return response()->json([
+                'message' => 'Usuario no tiene sucursal asignada'
+            ], 400);
+        }
+
+        $productos = Inventario::porSucursal($sucursalId)
+            ->sinStock()
+            ->with(['producto.categoria', 'producto.unidadMedida'])
+            ->get()
+            ->map(function($inventario) {
+                $producto = $inventario->producto;
+                $producto->stock_actual = $inventario->stock_actual;
+                $producto->stock_minimo = $inventario->stock_minimo;
+                return $producto;
+            });
+
+        return response()->json([
+            'data' => $productos
+        ]);
     }
 
     /**
      * Obtener kardex de un producto
      */
-    public function kardexProducto(int $productoId, Request $request)
+    public function obtenerKardex(Request $request, int $productoId)
     {
+        $sucursalId = $request->user()->sucursal_id;
+
+        if (!$sucursalId) {
+            return response()->json([
+                'message' => 'Usuario no tiene sucursal asignada'
+            ], 400);
+        }
+
+        $desde = $request->input('desde');
+        $hasta = $request->input('hasta', now()->toDateString());
+
         $kardex = $this->inventarioService->obtenerKardexProducto(
             $productoId,
-            $request->desde ?? null,
-            $request->hasta ?? null
+            $sucursalId,
+            $desde,
+            $hasta
         );
 
-        return response()->json($kardex);
+        $producto = \App\Models\Producto::findOrFail($productoId);
+
+        return response()->json([
+            'producto' => [
+                'id' => $producto->id,
+                'codigo_referencia' => $producto->codigo_referencia,
+                'nombre' => $producto->nombre,
+            ],
+            'kardex' => $kardex,
+        ]);
     }
 
     /**
-     * Productos con stock bajo
+     * Listar movimientos de inventario
      */
-    public function productosBajoStock()
+    public function listarMovimientos(Request $request)
     {
-        $productos = $this->inventarioService->obtenerProductosBajoStock();
+        $sucursalId = $request->user()->sucursal_id;
 
-        return response()->json($productos);
-    }
+        if (!$sucursalId) {
+            return response()->json([
+                'message' => 'Usuario no tiene sucursal asignada'
+            ], 400);
+        }
 
-    /**
-     * Valor total del inventario
-     */
-    public function valorInventario()
-    {
-        $resumen = $this->inventarioService->calcularValorInventario();
+        $query = MovimientoInventario::with([
+            'producto',
+            'usuario',
+            'sucursalOrigen',
+            'sucursalDestino'
+        ])->porSucursal($sucursalId);
 
-        return response()->json($resumen);
+        // Filtros
+        if ($request->filled('tipo_movimiento')) {
+            $query->where('tipo_movimiento', $request->tipo_movimiento);
+        }
+
+        if ($request->filled('producto_id')) {
+            $query->where('producto_id', $request->producto_id);
+        }
+
+        if ($request->filled('search')) {
+            $search = $request->search;
+            $query->whereHas('producto', function($q) use ($search) {
+                $q->where('nombre', 'ILIKE', "%{$search}%")
+                  ->orWhere('codigo_referencia', 'ILIKE', "%{$search}%");
+            });
+        }
+
+        $movimientos = $query->orderBy('fecha_movimiento', 'desc')
+            ->limit(100)
+            ->get();
+
+        return response()->json([
+            'data' => $movimientos
+        ]);
     }
 
     /**
@@ -162,24 +317,129 @@ class InventarioController extends Controller
      */
     public function movimientosDelDia(Request $request)
     {
+        $sucursalId = $request->user()->sucursal_id;
+
+        if (!$sucursalId) {
+            return response()->json([
+                'message' => 'Usuario no tiene sucursal asignada'
+            ], 400);
+        }
+
         $movimientos = $this->inventarioService->obtenerMovimientosDelDia(
+            $sucursalId,
             $request->fecha ?? null
         );
 
-        return response()->json($movimientos);
+        return response()->json([
+            'data' => $movimientos
+        ]);
     }
 
     /**
-     * Productos más vendidos
+     * Validar disponibilidad de stock
      */
-    public function productosMasVendidos(Request $request)
+    public function validarDisponibilidad(Request $request)
     {
-        $productos = $this->inventarioService->obtenerProductosMasVendidos(
-            $request->limit ?? 10,
-            $request->desde ?? null,
-            $request->hasta ?? null
+        $validated = $request->validate([
+            'producto_id' => 'required|exists:productos,id',
+            'cantidad' => 'required|numeric|min:0.01',
+        ]);
+
+        $sucursalId = $request->user()->sucursal_id;
+
+        if (!$sucursalId) {
+            return response()->json([
+                'message' => 'Usuario no tiene sucursal asignada',
+                'disponible' => false,
+            ], 400);
+        }
+
+        $disponible = $this->inventarioService->validarDisponibilidad(
+            $validated['producto_id'],
+            $sucursalId,
+            $validated['cantidad']
         );
 
-        return response()->json($productos);
+        $stockActual = $this->inventarioService->obtenerStockDisponible(
+            $validated['producto_id'],
+            $sucursalId
+        );
+
+        return response()->json([
+            'disponible' => $disponible,
+            'stock_actual' => $stockActual,
+            'cantidad_requerida' => $validated['cantidad'],
+        ]);
+    }
+
+    /**
+     * Obtener inventario de un producto
+     */
+    public function inventarioProducto(Request $request, int $productoId)
+    {
+        $sucursalId = $request->user()->sucursal_id;
+
+        if (!$sucursalId) {
+            return response()->json([
+                'message' => 'Usuario no tiene sucursal asignada'
+            ], 400);
+        }
+
+        $inventario = Inventario::with(['producto', 'sucursal'])
+            ->where('producto_id', $productoId)
+            ->where('sucursal_id', $sucursalId)
+            ->first();
+
+        if (!$inventario) {
+            return response()->json([
+                'message' => 'No hay inventario para este producto en tu sucursal'
+            ], 404);
+        }
+
+        return response()->json($inventario);
+    }
+
+    /**
+     * Listar inventario completo de la sucursal
+     */
+    public function index(Request $request)
+    {
+        $sucursalId = $request->user()->sucursal_id;
+
+        if (!$sucursalId) {
+            return response()->json([
+                'message' => 'Usuario no tiene sucursal asignada'
+            ], 400);
+        }
+
+        $query = Inventario::with(['producto.categoria'])
+            ->porSucursal($sucursalId);
+
+        // Filtros
+        if ($request->filled('con_stock')) {
+            $query->conStock();
+        }
+
+        if ($request->filled('sin_stock')) {
+            $query->sinStock();
+        }
+
+        if ($request->filled('bajo_stock')) {
+            $query->bajoStock();
+        }
+
+        if ($request->filled('search')) {
+            $search = $request->search;
+            $query->whereHas('producto', function($q) use ($search) {
+                $q->where('nombre', 'ILIKE', "%{$search}%")
+                  ->orWhere('codigo_referencia', 'ILIKE', "%{$search}%");
+            });
+        }
+
+        $inventarios = $query->get();
+
+        return response()->json([
+            'data' => $inventarios
+        ]);
     }
 }

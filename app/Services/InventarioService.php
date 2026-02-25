@@ -2,8 +2,10 @@
 
 namespace App\Services;
 
+use App\Models\Inventario;
+use App\Models\MovimientoInventario;
 use App\Models\Producto;
-use App\Models\Kardex;
+use App\Models\Sucursal;
 use App\Models\Venta;
 use Illuminate\Support\Facades\DB;
 use Exception;
@@ -15,116 +17,170 @@ class InventarioService
      */
     public function descontarStockVenta(Venta $venta): void
     {
+        $sucursalId = $venta->usuario->sucursal_id;
+
+        if (!$sucursalId) {
+            throw new Exception('El usuario de la venta no tiene sucursal asignada');
+        }
+
         foreach ($venta->detalles as $detalle) {
-            $this->registrarSalida(
+            $this->actualizarStock(
                 $detalle->producto_id,
+                $sucursalId,
                 $detalle->cantidad,
-                'venta',
-                $venta->id,
-                $venta->usuario_id,
-                "Venta {$venta->numero_venta}"
+                'salida',
+                null,
+                "Venta {$venta->numero_venta}",
+                $venta->numero_venta,
+                $venta->usuario_id
             );
         }
     }
 
     /**
-     * Registrar entrada de inventario
+     * Actualizar stock de un producto en una sucursal
      */
-    public function registrarEntrada(
+    public function actualizarStock(
         int $productoId,
-        int $cantidad,
-        string $referenciaTipo,
-        ?int $referenciaId = null,
-        int $usuarioId,
+        int $sucursalId,
+        float $cantidad,
+        string $tipoMovimiento,
         ?float $costoUnitario = null,
-        ?string $observacion = null
-    ): Kardex {
+        ?string $motivo = null,
+        ?string $referencia = null,
+        ?int $usuarioId = null
+    ): array {
         return DB::transaction(function () use (
             $productoId,
+            $sucursalId,
             $cantidad,
-            $referenciaTipo,
-            $referenciaId,
-            $usuarioId,
+            $tipoMovimiento,
             $costoUnitario,
-            $observacion
+            $motivo,
+            $referencia,
+            $usuarioId
         ) {
-            $producto = Producto::lockForUpdate()->findOrFail($productoId);
-            $stockAnterior = $producto->stock_actual;
+            // 1. Validar datos
+            $this->validarDatos($productoId, $sucursalId, $cantidad, $tipoMovimiento);
 
-            // Registrar en kardex
-            $kardex = Kardex::registrarMovimiento(
-                $productoId,
-                'entrada',
-                $referenciaTipo,
-                $referenciaId,
-                $cantidad,
-                $stockAnterior,
-                $costoUnitario,
-                $usuarioId,
-                $observacion
-            );
+            // 2. Bloquear registro de inventario (SELECT FOR UPDATE)
+            $inventario = Inventario::where('producto_id', $productoId)
+                ->where('sucursal_id', $sucursalId)
+                ->lockForUpdate()
+                ->first();
 
-            // Actualizar stock del producto
-            $producto->actualizarStock($cantidad, 'entrada');
-
-            // Actualizar costo si se proporciona
-            if ($costoUnitario) {
-                $producto->update(['costo_compra' => $costoUnitario]);
+            // 3. Crear inventario si no existe
+            if (!$inventario) {
+                $inventario = Inventario::create([
+                    'producto_id' => $productoId,
+                    'sucursal_id' => $sucursalId,
+                    'stock_actual' => 0,
+                    'stock_minimo' => 0,
+                    'costo_promedio' => $costoUnitario ?? 0,
+                ]);
             }
 
-            return $kardex;
+            // 4. Validar stock disponible para salidas
+            if (in_array($tipoMovimiento, ['salida', 'traslado_salida'])) {
+                if ($inventario->stock_actual < $cantidad) {
+                    throw new Exception(
+                        "Stock insuficiente. Disponible: {$inventario->stock_actual}, Requerido: {$cantidad}"
+                    );
+                }
+            }
+
+            $stockAnterior = $inventario->stock_actual;
+
+            // 5. Actualizar stock según tipo de movimiento
+            switch ($tipoMovimiento) {
+                case 'entrada':
+                case 'traslado_entrada':
+                    $inventario->incrementarStock($cantidad, $costoUnitario);
+                    break;
+
+                case 'salida':
+                case 'traslado_salida':
+                    $inventario->decrementarStock($cantidad);
+                    break;
+
+                case 'ajuste':
+                    // Para ajustes, la cantidad representa el nuevo stock
+                    $inventario->ajustarStock($cantidad);
+                    break;
+
+                default:
+                    throw new Exception("Tipo de movimiento no válido: {$tipoMovimiento}");
+            }
+
+            // 6. Registrar movimiento en kardex
+            $movimiento = MovimientoInventario::create([
+                'producto_id' => $productoId,
+                'sucursal_origen_id' => $sucursalId,
+                'tipo_movimiento' => $tipoMovimiento,
+                'cantidad' => $tipoMovimiento === 'ajuste' 
+                    ? abs($cantidad - $stockAnterior) 
+                    : $cantidad,
+                'costo_unitario' => $costoUnitario,
+                'motivo' => $motivo ?? "Movimiento de {$tipoMovimiento}",
+                'referencia' => $referencia,
+                'fecha_movimiento' => now(),
+                'usuario_id' => $usuarioId ?? auth()->id(),
+            ]);
+
+            return [
+                'inventario' => $inventario->fresh(),
+                'movimiento' => $movimiento->fresh(['producto', 'usuario', 'sucursalOrigen']),
+                'stock_anterior' => $stockAnterior,
+                'stock_nuevo' => $inventario->stock_actual,
+            ];
         });
     }
 
     /**
-     * Registrar salida de inventario
+     * Registrar entrada de mercancía
+     */
+    public function registrarEntrada(
+        int $productoId,
+        int $sucursalId,
+        float $cantidad,
+        float $costoUnitario,
+        string $motivo,
+        ?string $referencia = null,
+        ?int $usuarioId = null
+    ): array {
+        return $this->actualizarStock(
+            $productoId,
+            $sucursalId,
+            $cantidad,
+            'entrada',
+            $costoUnitario,
+            $motivo,
+            $referencia,
+            $usuarioId
+        );
+    }
+
+    /**
+     * Registrar salida de mercancía
      */
     public function registrarSalida(
         int $productoId,
-        int $cantidad,
-        string $referenciaTipo,
-        ?int $referenciaId = null,
-        int $usuarioId,
-        ?string $observacion = null
-    ): Kardex {
-        return DB::transaction(function () use (
+        int $sucursalId,
+        float $cantidad,
+        string $motivo,
+        ?string $referencia = null,
+        ?int $usuarioId = null
+    ): array {
+        return $this->actualizarStock(
             $productoId,
+            $sucursalId,
             $cantidad,
-            $referenciaTipo,
-            $referenciaId,
-            $usuarioId,
-            $observacion
-        ) {
-            $producto = Producto::lockForUpdate()->findOrFail($productoId);
-
-            // Validar stock disponible
-            if (!$producto->tieneStockDisponible($cantidad)) {
-                throw new Exception(
-                    "Stock insuficiente para {$producto->nombre}. " .
-                    "Disponible: {$producto->stock_actual}, Solicitado: {$cantidad}"
-                );
-            }
-
-            $stockAnterior = $producto->stock_actual;
-
-            // Registrar en kardex
-            $kardex = Kardex::registrarMovimiento(
-                $productoId,
-                'salida',
-                $referenciaTipo,
-                $referenciaId,
-                $cantidad,
-                $stockAnterior,
-                $producto->costo_compra,
-                $usuarioId,
-                $observacion
-            );
-
-            // Actualizar stock del producto
-            $producto->actualizarStock($cantidad, 'salida');
-
-            return $kardex;
-        });
+            'salida',
+            null,
+            $motivo,
+            $referencia,
+            $usuarioId
+        );
     }
 
     /**
@@ -132,135 +188,273 @@ class InventarioService
      */
     public function registrarAjuste(
         int $productoId,
-        int $cantidadNueva,
-        int $usuarioId,
-        string $motivo
-    ): Kardex {
+        int $sucursalId,
+        float $nuevoStock,
+        string $motivo,
+        ?int $usuarioId = null
+    ): array {
+        return $this->actualizarStock(
+            $productoId,
+            $sucursalId,
+            $nuevoStock,
+            'ajuste',
+            null,
+            $motivo,
+            "AJUSTE-" . now()->format('YmdHis'),
+            $usuarioId
+        );
+    }
+
+    /**
+     * Trasladar productos entre sucursales
+     */
+    public function trasladarProducto(
+        int $productoId,
+        int $sucursalOrigenId,
+        int $sucursalDestinoId,
+        float $cantidad,
+        string $motivo,
+        ?int $usuarioId = null
+    ): array {
         return DB::transaction(function () use (
             $productoId,
-            $cantidadNueva,
-            $usuarioId,
-            $motivo
+            $sucursalOrigenId,
+            $sucursalDestinoId,
+            $cantidad,
+            $motivo,
+            $usuarioId
         ) {
-            $producto = Producto::lockForUpdate()->findOrFail($productoId);
-            $stockAnterior = $producto->stock_actual;
+            // Validar que las sucursales sean diferentes
+            if ($sucursalOrigenId === $sucursalDestinoId) {
+                throw new Exception('La sucursal origen y destino deben ser diferentes');
+            }
 
-            // Registrar en kardex
-            $kardex = Kardex::registrarMovimiento(
-                $productoId,
-                'ajuste',
-                'ajuste_manual',
-                null,
-                $cantidadNueva,
-                $stockAnterior,
-                $producto->costo_compra,
-                $usuarioId,
-                $motivo
-            );
+            // Validar que las sucursales existan
+            $sucursalOrigen = Sucursal::findOrFail($sucursalOrigenId);
+            $sucursalDestino = Sucursal::findOrFail($sucursalDestinoId);
+            $producto = Producto::findOrFail($productoId);
 
-            // Actualizar stock del producto directamente
-            $producto->update(['stock_actual' => $cantidadNueva]);
+            // Bloquear inventario origen
+            $invOrigen = Inventario::where('producto_id', $productoId)
+                ->where('sucursal_id', $sucursalOrigenId)
+                ->lockForUpdate()
+                ->first();
 
-            return $kardex;
+            if (!$invOrigen) {
+                throw new Exception(
+                    "El producto {$producto->nombre} no tiene inventario en {$sucursalOrigen->nombre}"
+                );
+            }
+
+            // Validar stock disponible
+            if ($invOrigen->stock_actual < $cantidad) {
+                throw new Exception(
+                    "Stock insuficiente en {$sucursalOrigen->nombre}. " .
+                    "Disponible: {$invOrigen->stock_actual}, Requerido: {$cantidad}"
+                );
+            }
+
+            // Bloquear inventario destino
+            $invDestino = Inventario::where('producto_id', $productoId)
+                ->where('sucursal_id', $sucursalDestinoId)
+                ->lockForUpdate()
+                ->first();
+
+            if (!$invDestino) {
+                $invDestino = Inventario::create([
+                    'producto_id' => $productoId,
+                    'sucursal_id' => $sucursalDestinoId,
+                    'stock_actual' => 0,
+                    'stock_minimo' => $invOrigen->stock_minimo,
+                    'costo_promedio' => $invOrigen->costo_promedio,
+                ]);
+            }
+
+            $stockOrigenAnterior = $invOrigen->stock_actual;
+            $stockDestinoAnterior = $invDestino->stock_actual;
+
+            // Restar de origen
+            $invOrigen->decrementarStock($cantidad);
+
+            // Sumar a destino
+            $invDestino->incrementarStock($cantidad, $invOrigen->costo_promedio);
+
+            // Generar referencia única
+            $referencia = "TRASLADO-" . now()->format('YmdHis');
+
+            // Registrar movimiento SALIDA en origen
+            $movimientoSalida = MovimientoInventario::create([
+                'producto_id' => $productoId,
+                'sucursal_origen_id' => $sucursalOrigenId,
+                'sucursal_destino_id' => $sucursalDestinoId,
+                'tipo_movimiento' => 'traslado_salida',
+                'cantidad' => $cantidad,
+                'costo_unitario' => $invOrigen->costo_promedio,
+                'motivo' => $motivo,
+                'referencia' => $referencia,
+                'fecha_movimiento' => now(),
+                'usuario_id' => $usuarioId ?? auth()->id(),
+            ]);
+
+            // Registrar movimiento ENTRADA en destino
+            $movimientoEntrada = MovimientoInventario::create([
+                'producto_id' => $productoId,
+                'sucursal_origen_id' => $sucursalOrigenId,
+                'sucursal_destino_id' => $sucursalDestinoId,
+                'tipo_movimiento' => 'traslado_entrada',
+                'cantidad' => $cantidad,
+                'costo_unitario' => $invOrigen->costo_promedio,
+                'motivo' => $motivo,
+                'referencia' => $referencia,
+                'fecha_movimiento' => now(),
+                'usuario_id' => $usuarioId ?? auth()->id(),
+            ]);
+
+            return [
+                'traslado' => [
+                    'referencia' => $referencia,
+                    'producto' => $producto->nombre,
+                    'cantidad' => $cantidad,
+                    'sucursal_origen' => $sucursalOrigen->nombre,
+                    'sucursal_destino' => $sucursalDestino->nombre,
+                ],
+                'inventario_origen' => [
+                    'stock_anterior' => $stockOrigenAnterior,
+                    'stock_nuevo' => $invOrigen->stock_actual,
+                ],
+                'inventario_destino' => [
+                    'stock_anterior' => $stockDestinoAnterior,
+                    'stock_nuevo' => $invDestino->stock_actual,
+                ],
+                'movimientos' => [
+                    'salida' => $movimientoSalida->fresh(['producto', 'usuario', 'sucursalOrigen', 'sucursalDestino']),
+                    'entrada' => $movimientoEntrada->fresh(['producto', 'usuario', 'sucursalOrigen', 'sucursalDestino']),
+                ],
+            ];
         });
     }
 
     /**
-     * Obtener productos con stock bajo
+     * Obtener productos con bajo stock en una sucursal
      */
-    public function obtenerProductosBajoStock()
+    public function obtenerProductosBajoStock(int $sucursalId)
     {
-        return Producto::bajoStock()
-            ->activos()
-            ->with(['categoria', 'unidadMedida'])
-            ->get();
+        return Inventario::porSucursal($sucursalId)
+            ->bajoStock()
+            ->with(['producto.categoria', 'producto.unidadMedida'])
+            ->get()
+            ->map(function($inventario) {
+                $producto = $inventario->producto;
+                $producto->stock_actual = $inventario->stock_actual;
+                $producto->stock_minimo = $inventario->stock_minimo;
+                return $producto;
+            });
     }
 
     /**
-     * Obtener kardex de un producto
+     * Obtener kardex de un producto en una sucursal
      */
-    public function obtenerKardexProducto(int $productoId, ?string $desde = null, ?string $hasta = null)
+    public function obtenerKardexProducto(int $productoId, int $sucursalId, ?string $desde = null, ?string $hasta = null)
     {
-        $query = Kardex::porProducto($productoId)
-            ->with(['usuario'])
-            ->orderBy('created_at', 'desc');
-
-        if ($desde && $hasta) {
-            $query->porFecha($desde, $hasta);
-        }
-
-        return $query->get();
+        return MovimientoInventario::obtenerKardex($productoId, $sucursalId, $desde, $hasta);
     }
 
     /**
-     * Calcular valor total del inventario
+     * Calcular valor total del inventario de una sucursal
      */
-    public function calcularValorInventario(): array
+    public function calcularValorInventario(int $sucursalId): array
     {
-        $productos = Producto::activos()
-            ->whereNotNull('costo_compra')
-            ->where('stock_actual', '>', 0)
+        $inventarios = Inventario::porSucursal($sucursalId)
+            ->conStock()
             ->get();
 
         $valorTotal = 0;
         $cantidadProductos = 0;
         $cantidadUnidades = 0;
 
-        foreach ($productos as $producto) {
-            $valorProducto = $producto->stock_actual * $producto->costo_compra;
+        foreach ($inventarios as $inventario) {
+            $valorProducto = $inventario->stock_actual * $inventario->costo_promedio;
             $valorTotal += $valorProducto;
             $cantidadProductos++;
-            $cantidadUnidades += $producto->stock_actual;
+            $cantidadUnidades += $inventario->stock_actual;
         }
 
         return [
-            'valor_total' => $valorTotal,
+            'valor_total' => round($valorTotal, 2),
             'cantidad_productos' => $cantidadProductos,
             'cantidad_unidades' => $cantidadUnidades,
             'promedio_costo' => $cantidadUnidades > 0 
-                ? $valorTotal / $cantidadUnidades 
+                ? round($valorTotal / $cantidadUnidades, 2)
                 : 0,
         ];
     }
 
     /**
-     * Obtener movimientos de inventario del día
+     * Obtener movimientos del día en una sucursal
      */
-    public function obtenerMovimientosDelDia(?string $fecha = null)
+    public function obtenerMovimientosDelDia(int $sucursalId, ?string $fecha = null)
     {
         $fecha = $fecha ?? today();
 
-        return Kardex::whereDate('created_at', $fecha)
-            ->with(['producto', 'usuario'])
-            ->orderBy('created_at', 'desc')
+        return MovimientoInventario::whereDate('fecha_movimiento', $fecha)
+            ->porSucursal($sucursalId)
+            ->with(['producto', 'usuario', 'sucursalOrigen', 'sucursalDestino'])
+            ->orderBy('fecha_movimiento', 'desc')
             ->get();
     }
 
     /**
-     * Obtener productos más vendidos
+     * Validar datos de entrada
      */
-    public function obtenerProductosMasVendidos(int $limit = 10, ?string $desde = null, ?string $hasta = null)
-    {
-        $query = DB::table('detalle_ventas')
-            ->join('productos', 'detalle_ventas.producto_id', '=', 'productos.id')
-            ->join('ventas', 'detalle_ventas.venta_id', '=', 'ventas.id')
-            ->where('ventas.estado', 'completada')
-            ->select(
-                'productos.id',
-                'productos.nombre',
-                'productos.codigo_referencia',
-                DB::raw('SUM(detalle_ventas.cantidad) as total_vendido'),
-                DB::raw('SUM(detalle_ventas.total) as total_ingresos'),
-                DB::raw('COUNT(DISTINCT ventas.id) as cantidad_ventas')
-            )
-            ->groupBy('productos.id', 'productos.nombre', 'productos.codigo_referencia');
-
-        if ($desde && $hasta) {
-            $query->whereBetween('ventas.fecha_venta', [$desde, $hasta]);
+    private function validarDatos(
+        int $productoId,
+        int $sucursalId,
+        float $cantidad,
+        string $tipoMovimiento
+    ): void {
+        if (!Producto::where('id', $productoId)->exists()) {
+            throw new Exception("Producto con ID {$productoId} no existe");
         }
 
-        return $query->orderByDesc('total_vendido')
-            ->limit($limit)
-            ->get();
+        if (!Sucursal::where('id', $sucursalId)->exists()) {
+            throw new Exception("Sucursal con ID {$sucursalId} no existe");
+        }
+
+        if ($cantidad <= 0 && $tipoMovimiento !== 'ajuste') {
+            throw new Exception("La cantidad debe ser mayor a 0");
+        }
+
+        $tiposValidos = ['entrada', 'salida', 'ajuste', 'traslado_entrada', 'traslado_salida'];
+        if (!in_array($tipoMovimiento, $tiposValidos)) {
+            throw new Exception("Tipo de movimiento no válido: {$tipoMovimiento}");
+        }
+    }
+
+    /**
+     * Validar disponibilidad de stock
+     */
+    public function validarDisponibilidad(int $productoId, int $sucursalId, float $cantidadRequerida): bool
+    {
+        $inventario = Inventario::where('producto_id', $productoId)
+            ->where('sucursal_id', $sucursalId)
+            ->first();
+
+        if (!$inventario) {
+            return false;
+        }
+
+        return $inventario->stock_actual >= $cantidadRequerida;
+    }
+
+    /**
+     * Obtener stock disponible
+     */
+    public function obtenerStockDisponible(int $productoId, int $sucursalId): float
+    {
+        $inventario = Inventario::where('producto_id', $productoId)
+            ->where('sucursal_id', $sucursalId)
+            ->first();
+
+        return $inventario ? $inventario->stock_actual : 0;
     }
 }

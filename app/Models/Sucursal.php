@@ -129,4 +129,79 @@ class Sucursal extends Model
 
         return $this->update(['es_principal' => true]);
     }
+
+// =====================================
+// MÉTODOS DE INVENTARIO (agregar al final)
+// =====================================
+
+/**
+ * Obtener inventario de un producto en esta sucursal
+ */
+public function inventarioDeProducto(int $productoId): ?Inventario
+{
+    return $this->inventarios()
+        ->where('producto_id', $productoId)
+        ->first();
+}
+
+/**
+ * Obtener productos con stock en esta sucursal
+ */
+public function productosConStock()
+{
+    return $this->inventarios()
+        ->with('producto')
+        ->where('stock_actual', '>', 0)
+        ->get()
+        ->pluck('producto');
+}
+
+/**
+ * Obtener productos bajo stock en esta sucursal
+ */
+public function productosBajoStock()
+{
+    return $this->inventarios()
+        ->with('producto')
+        ->whereColumn('stock_actual', '<=', 'stock_minimo')
+        ->where('stock_actual', '>', 0)
+        ->get();
+}
+
+/**
+ * Obtener productos sin stock en esta sucursal
+ */
+public function productosSinStock()
+{
+    return $this->inventarios()
+        ->with('producto')
+        ->where('stock_actual', '<=', 0)
+        ->get();
+}
+
+/**
+ * Obtener valor total del inventario de esta sucursal
+ */
+public function getValorInventarioAttribute(): float
+{
+    return $this->inventarios()
+        ->get()
+        ->sum(fn($inv) => $inv->stock_actual * $inv->costo_promedio);
+}
+
+/**
+ * Obtener cantidad de productos en inventario
+ */
+public function getCantidadProductosInventarioAttribute(): int
+{
+    return $this->inventarios()->count();
+}
+
+/**
+ * Obtener cantidad de productos con stock
+ */
+public function getCantidadProductosConStockAttribute(): int
+{
+    return $this->inventarios()->where('stock_actual', '>', 0)->count();
+}
 }
