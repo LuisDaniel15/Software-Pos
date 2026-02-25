@@ -204,4 +204,21 @@ public function getCantidadProductosConStockAttribute(): int
 {
     return $this->inventarios()->where('stock_actual', '>', 0)->count();
 }
+
+// Agregar al modelo Sucursal
+
+public function roles(): BelongsToMany
+{
+    return $this->belongsToMany(Rol::class, 'rol_sucursal')
+        ->withTimestamps();
+}
+
+public function usuariosConAcceso()
+{
+    return User::whereHas('rol.sucursales', function($q) {
+        $q->where('sucursales.id', $this->id);
+    })->orWhereHas('rol', function($q) {
+        $q->where('nombre', 'admin');
+    })->get();
+}
 }

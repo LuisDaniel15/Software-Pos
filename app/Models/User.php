@@ -18,9 +18,8 @@ class User extends Authenticatable
         'name',
         'email',
         'password',
-        'rol',
+        'rol_id', // ← NUEVO
         'activo',
-        'sucursal_id', // ← AGREGAR
     ];
 
     protected $hidden = [
@@ -36,7 +35,15 @@ class User extends Authenticatable
         'updated_at' => 'datetime',
     ];
 
-    // Relaciones
+    // =====================================
+    // RELACIONES
+    // =====================================
+
+    public function rol(): BelongsTo
+    {
+        return $this->belongsTo(Rol::class);
+    }
+
     public function ventas(): HasMany
     {
         return $this->hasMany(Venta::class, 'usuario_id');
@@ -52,9 +59,9 @@ class User extends Authenticatable
         return $this->hasMany(MovimientoCaja::class, 'usuario_id');
     }
 
-    public function kardex(): HasMany
+    public function movimientosInventario(): HasMany
     {
-        return $this->hasMany(Kardex::class, 'usuario_id');
+        return $this->hasMany(MovimientoInventario::class, 'usuario_id');
     }
 
     public function logsFactus(): HasMany
@@ -67,7 +74,84 @@ class User extends Authenticatable
         return $this->hasMany(AuditoriaAccion::class, 'usuario_id');
     }
 
-    // Scopes
+    // =====================================
+    // MÉTODOS DE SUCURSALES
+    // =====================================
+
+    /**
+     * Obtener sucursales a las que el usuario tiene acceso
+     */
+    public function sucursalesAccesibles()
+    {
+        if (!$this->rol) {
+            return collect([]);
+        }
+
+        // Admin tiene todas las sucursales
+        if ($this->rol->es_admin) {
+            return Sucursal::activas()->get();
+        }
+
+        return $this->rol->sucursales()->where('sucursales.activa', true)->get();
+    }
+
+    /**
+     * Obtener IDs de sucursales accesibles
+     */
+    public function getSucursalesIdsAttribute(): array
+    {
+        if (!$this->rol) {
+            return [];
+        }
+
+        return $this->rol->sucursales_ids;
+    }
+
+    /**
+     * Verificar si tiene acceso a una sucursal
+     */
+    public function tieneAccesoASucursal(int $sucursalId): bool
+    {
+        if (!$this->rol) {
+            return false;
+        }
+
+        return $this->rol->tieneAccesoASucursal($sucursalId);
+    }
+
+    /**
+     * Obtener la primera sucursal accesible (para operaciones por defecto)
+     */
+    public function getSucursalPrincipalAttribute(): ?Sucursal
+    {
+        $sucursales = $this->sucursalesAccesibles();
+        
+        // Buscar sucursal principal primero
+        $principal = $sucursales->firstWhere('es_principal', true);
+        
+        return $principal ?? $sucursales->first();
+    }
+
+    /**
+     * Obtener ID de sucursal principal (para compatibilidad con código anterior)
+     */
+    public function getSucursalIdAttribute(): ?int
+    {
+        return $this->sucursal_principal?->id;
+    }
+
+    /**
+     * Obtener nombre de sucursal principal
+     */
+    public function getSucursalNombreAttribute(): ?string
+    {
+        return $this->sucursal_principal?->nombre;
+    }
+
+    // =====================================
+    // SCOPES
+    // =====================================
+
     public function scopeActivos($query)
     {
         return $query->where('activo', true);
@@ -75,17 +159,37 @@ class User extends Authenticatable
 
     public function scopeAdmins($query)
     {
-        return $query->where('rol', 'admin');
+        return $query->whereHas('rol', function($q) {
+            $q->where('nombre', 'admin');
+        });
     }
 
     public function scopeCajeros($query)
     {
-        return $query->where('rol', 'cajero');
+        return $query->whereHas('rol', function($q) {
+            $q->where('nombre', 'cajero');
+        });
     }
 
     public function scopeSupervisores($query)
     {
-        return $query->where('rol', 'supervisor');
+        return $query->whereHas('rol', function($q) {
+            $q->where('nombre', 'supervisor');
+        });
+    }
+
+    public function scopePorRol($query, int $rolId)
+    {
+        return $query->where('rol_id', $rolId);
+    }
+
+    public function scopeConAccesoASucursal($query, int $sucursalId)
+    {
+        return $query->whereHas('rol.sucursales', function($q) use ($sucursalId) {
+            $q->where('sucursales.id', $sucursalId);
+        })->orWhereHas('rol', function($q) {
+            $q->where('nombre', 'admin');
+        });
     }
 
     public function scopeBuscar($query, string $busqueda)
@@ -94,21 +198,44 @@ class User extends Authenticatable
                     ->orWhere('email', 'ILIKE', "%{$busqueda}%");
     }
 
-    // Accessors
+    // =====================================
+    // ACCESSORS DE ROL
+    // =====================================
+
     public function getEsAdminAttribute(): bool
     {
-        return $this->rol === 'admin';
+        return $this->rol && $this->rol->es_admin;
     }
 
     public function getEsCajeroAttribute(): bool
     {
-        return $this->rol === 'cajero';
+        return $this->rol && $this->rol->es_cajero;
     }
 
     public function getEsSupervisorAttribute(): bool
     {
-        return $this->rol === 'supervisor';
+        return $this->rol && $this->rol->es_supervisor;
     }
+
+    // Métodos helper (alias)
+    public function esAdmin(): bool
+    {
+        return $this->es_admin;
+    }
+
+    public function esSupervisor(): bool
+    {
+        return $this->es_supervisor;
+    }
+
+    public function esCajero(): bool
+    {
+        return $this->es_cajero;
+    }
+
+    // =====================================
+    // ACCESSORS DE TURNO
+    // =====================================
 
     public function getTurnoActivoAttribute(): ?TurnoCaja
     {
@@ -123,7 +250,13 @@ class User extends Authenticatable
         return $this->turno_activo !== null;
     }
 
-    // Métodos de Permisos
+    // =====================================
+    // MÉTODOS DE PERMISOS
+    // =====================================
+
+    /**
+     * Verificar si tiene un permiso específico
+     */
     public function puedeAcceder(string $permiso): bool
     {
         // Admin tiene todos los permisos
@@ -153,10 +286,24 @@ class User extends Authenticatable
     }
 
     /**
+     * Alias para compatibilidad
+     */
+    public function hasPermission(string $permission): bool
+    {
+        return $this->puedeAcceder($permission);
+    }
+
+    /**
      * Obtener todos los permisos del rol del usuario
      */
     public function getPermisosDelRol(): array
     {
+        if (!$this->rol) {
+            return [];
+        }
+
+        $rolNombre = $this->rol->nombre;
+
         $permisos = [
             'admin' => [
                 // Acceso total
@@ -177,9 +324,9 @@ class User extends Authenticatable
                 
                 // Inventario
                 'inventario.ver',
-                'inventario.entrada',
-                'inventario.salida',
-                'inventario.ajuste',
+                'inventario.crear',
+                'inventario.trasladar',
+                'inventario.ajustar',
                 
                 // Caja
                 'caja.ver',
@@ -207,6 +354,9 @@ class User extends Authenticatable
                 'clientes.crear',
                 'clientes.buscar',
                 
+                // Inventario (solo ver)
+                'inventario.ver',
+                
                 // Caja (todas las operaciones)
                 'caja.abrir',
                 'caja.cerrar',
@@ -222,7 +372,7 @@ class User extends Authenticatable
             ],
         ];
 
-        return $permisos[$this->rol] ?? [];
+        return $permisos[$rolNombre] ?? [];
     }
 
     /**
@@ -270,9 +420,9 @@ class User extends Authenticatable
             'clientes.*' => 'Gestión completa de clientes',
             
             'inventario.ver' => 'Ver inventario',
-            'inventario.entrada' => 'Registrar entradas',
-            'inventario.salida' => 'Registrar salidas',
-            'inventario.ajuste' => 'Ajustar inventario',
+            'inventario.crear' => 'Registrar movimientos',
+            'inventario.trasladar' => 'Trasladar entre sucursales',
+            'inventario.ajustar' => 'Ajustar inventario',
             'inventario.*' => 'Gestión completa de inventario',
             
             'caja.abrir' => 'Abrir caja',
@@ -302,6 +452,10 @@ class User extends Authenticatable
         return $traducciones[$permiso] ?? $permiso;
     }
 
+    // =====================================
+    // AUDITORÍA
+    // =====================================
+
     public function registrarAuditoria(
         string $accion,
         string $tabla,
@@ -317,28 +471,5 @@ class User extends Authenticatable
             $datosAnteriores,
             $datosNuevos
         );
-    }
-
- public function sucursal(): BelongsTo
-    {
-        return $this->belongsTo(Sucursal::class);
-    }
-
-    // =====================================
-    // SCOPES (agregar)
-    // =====================================
-
-    public function scopePorSucursal($query, int $sucursalId)
-    {
-        return $query->where('sucursal_id', $sucursalId);
-    }
-
-    // =====================================
-    // ACCESSORS (agregar)
-    // =====================================
-
-    public function getSucursalNombreAttribute(): ?string
-    {
-        return $this->sucursal?->nombre;
     }
 }

@@ -5,9 +5,13 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Producto extends Model
 {
+    use SoftDeletes;
+
     protected $table = 'productos';
 
     protected $fillable = [
@@ -18,11 +22,8 @@ class Producto extends Model
         'precio_venta',
         'porcentaje_iva',
         'costo_compra',
-        'stock_actual',
-        'stock_minimo',
         'unidad_medida_id',
         'codigo_estandar_id',
-        'codigo_estandar_valor',
         'tributo_id',
         'es_excluido',
         'permite_mandato',
@@ -31,17 +32,20 @@ class Producto extends Model
 
     protected $casts = [
         'precio_venta' => 'decimal:2',
+        'porcentaje_iva' => 'decimal:2',
         'costo_compra' => 'decimal:2',
-        'stock_actual' => 'decimal:2',
-        'stock_minimo' => 'decimal:2',
-        'es_excluido' => 'integer',
+        'es_excluido' => 'boolean',
         'permite_mandato' => 'boolean',
         'activo' => 'boolean',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
+        'deleted_at' => 'datetime',
     ];
 
-    // Relaciones
+    // =====================================
+    // RELACIONES
+    // =====================================
+
     public function categoria(): BelongsTo
     {
         return $this->belongsTo(Categoria::class);
@@ -62,133 +66,71 @@ class Producto extends Model
         return $this->belongsTo(Tributo::class);
     }
 
-    public function kardex(): HasMany
-    {
-        return $this->hasMany(Kardex::class);
-    }
-
-    public function detalleVentas(): HasMany
-    {
-        return $this->hasMany(DetalleVenta::class);
-    }
-
-    // Scopes
-    public function scopeActivos($query)
-    {
-        return $query->where('activo', true);
-    }
-
-    public function scopeBuscar($query, string $busqueda)
-    {
-        return $query->where(function($q) use ($busqueda) {
-            $q->where('nombre', 'ILIKE', "%{$busqueda}%")
-              ->orWhere('codigo_referencia', 'ILIKE', "%{$busqueda}%")
-              ->orWhere('codigo_estandar_valor', 'ILIKE', "%{$busqueda}%");
-        });
-    }
-
-    public function scopeConStock($query)
-    {
-        return $query->where('stock_actual', '>', 0);
-    }
-
-    public function scopeBajoStock($query)
-    {
-        return $query->whereRaw('stock_actual <= stock_minimo');
-    }
-
-    public function scopePorCategoria($query, int $categoriaId)
-    {
-        return $query->where('categoria_id', $categoriaId);
-    }
-
-    // Accessors
-    public function getPrecioSinIvaAttribute(): float
-    {
-        $porcentaje = (float) str_replace(',', '.', $this->porcentaje_iva);
-        return $this->precio_venta / (1 + ($porcentaje / 100));
-    }
-
-    public function getValorIvaAttribute(): float
-    {
-        return $this->precio_venta - $this->precio_sin_iva;
-    }
-
-    public function getEsExcluidoBooleanoAttribute(): bool
-    {
-        return $this->es_excluido === 1;
-    }
-
-    public function getTieneStockAttribute(): bool
-    {
-        return $this->stock_actual > 0;
-    }
-
-    public function getEstaBajoStockAttribute(): bool
-    {
-        return $this->stock_minimo && $this->stock_actual <= $this->stock_minimo;
-    }
-
-    public function getMargenAttribute(): ?float
-    {
-        if (!$this->costo_compra || $this->costo_compra == 0) {
-            return null;
-        }
-        
-        return (($this->precio_venta - $this->costo_compra) / $this->costo_compra) * 100;
-    }
-
-    public function getUtilidadAttribute(): ?float
-    {
-        if (!$this->costo_compra) {
-            return null;
-        }
-        
-        return $this->precio_venta - $this->costo_compra;
-    }
-
-    // Métodos
-    public function actualizarStock(float $cantidad, string $tipo = 'entrada'): bool
-    {
-        if ($tipo === 'entrada') {
-            $this->stock_actual += $cantidad;
-        } else {
-            $this->stock_actual -= $cantidad;
-        }
-
-        return $this->save();
-    }
-
-    public function tieneStockDisponible(float $cantidad): bool
-    {
-        return $this->stock_actual >= $cantidad;
-    }
-
-    public function getDatosParaFactus(int $cantidad, float $descuento = 0): array
-    {
-        return [
-            'code_reference' => $this->codigo_referencia,
-            'name' => $this->nombre,
-            'quantity' => $cantidad,
-            'price' => (float) $this->precio_venta,
-            'tax_rate' => $this->porcentaje_iva,
-            'discount_rate' => $descuento,
-            'unit_measure_id' => $this->unidad_medida_id,
-            'standard_code_id' => $this->codigo_estandar_id,
-            'is_excluded' => $this->es_excluido,
-            'tribute_id' => $this->tributo_id,
-        ];
-    }
-
-
-     // =====================================
-    // RELACIONES (agregar)
-    // =====================================
-
     public function inventarios(): HasMany
     {
         return $this->hasMany(Inventario::class);
     }
+
+    public function detallesVenta(): HasMany
+    {
+        return $this->hasMany(DetalleVenta::class);
+    }
+
+    public function movimientosInventario(): HasMany
+    {
+        return $this->hasMany(MovimientoInventario::class);
+    }
+
+    // =====================================
+    // SCOPES
+    // =====================================
+
+    public function scopeActivos(Builder $query): Builder
+    {
+        return $query->where('activo', true);
+    }
+
+    public function scopeInactivos(Builder $query): Builder
+    {
+        return $query->where('activo', false);
+    }
+
+    public function scopePorCategoria(Builder $query, int $categoriaId): Builder
+    {
+        return $query->where('categoria_id', $categoriaId);
+    }
+
+    // ❌ REMOVER estos scopes (ahora se manejan por inventario)
+    // public function scopeBajoStock(Builder $query): Builder
+    // public function scopeSinStock(Builder $query): Builder
+    // public function scopeConStock(Builder $query): Builder
+
+    /**
+     * Productos con stock en una sucursal específica
+     */
+    public function scopeConStockEnSucursal(Builder $query, int $sucursalId): Builder
+    {
+        return $query->whereHas('inventarios', function($q) use ($sucursalId) {
+            $q->where('sucursal_id', $sucursalId)
+              ->where('stock_actual', '>', 0);
+        });
+    }
+
+    /**
+     * Productos bajo stock en una sucursal específica
+     */
+    public function scopeBajoStockEnSucursal(Builder $query, int $sucursalId): Builder
+    {
+        return $query->whereHas('inventarios', function($q) use ($sucursalId) {
+            $q->where('sucursal_id', $sucursalId)
+              ->whereColumn('stock_actual', '<=', 'stock_minimo')
+              ->where('stock_actual', '>', 0);
+        });
+    }
+
+    // =====================================
+    // MÉTODOS DE INVENTARIO POR SUCURSAL
+    // =====================================
 
     /**
      * Obtener inventario de una sucursal específica
@@ -226,7 +168,7 @@ class Producto extends Model
     }
 
     /**
-     * Obtener valor total del inventario
+     * Obtener valor total del inventario en todas las sucursales
      */
     public function getValorInventarioTotalAttribute(): float
     {
@@ -235,24 +177,66 @@ class Producto extends Model
             ->sum(fn($inv) => $inv->stock_actual * $inv->costo_promedio);
     }
 
-    // =====================================
-    // SCOPES (agregar)
-    // =====================================
-
-    public function scopeConStockEnSucursal(Builder $query, int $sucursalId): Builder
+    /**
+     * Obtener sucursales donde hay stock disponible
+     */
+    public function sucursalesConStock()
     {
-        return $query->whereHas('inventarios', function($q) use ($sucursalId) {
-            $q->where('sucursal_id', $sucursalId)
-              ->where('stock_actual', '>', 0);
-        });
+        return $this->inventarios()
+            ->with('sucursal')
+            ->where('stock_actual', '>', 0)
+            ->get()
+            ->pluck('sucursal');
     }
 
-    public function scopeBajoStockEnSucursal(Builder $query, int $sucursalId): Builder
+    // =====================================
+    // MÉTODOS HEREDADOS (mantener compatibilidad)
+    // =====================================
+
+    // ❌ REMOVER estos métodos
+    // public function actualizarStock(int $cantidad, string $tipo): bool
+    // public function tieneStockDisponible(int $cantidad): bool
+
+    // =====================================
+    // ACCESSORS
+    // =====================================
+
+    public function getPrecioConIvaAttribute(): float
     {
-        return $query->whereHas('inventarios', function($q) use ($sucursalId) {
-            $q->where('sucursal_id', $sucursalId)
-              ->whereColumn('stock_actual', '<=', 'stock_minimo')
-              ->where('stock_actual', '>', 0);
-        });
+        return $this->precio_venta * (1 + ($this->porcentaje_iva / 100));
+    }
+
+    public function getValorIvaAttribute(): float
+    {
+        return $this->precio_venta * ($this->porcentaje_iva / 100);
+    }
+
+    public function getEsActivoAttribute(): bool
+    {
+        return $this->activo;
+    }
+
+    // ❌ REMOVER estos accessors
+    // public function getEsBajoStockAttribute(): bool
+    // public function getEsSinStockAttribute(): bool
+    // public function getEsConStockAttribute(): bool
+
+    // =====================================
+    // MÉTODOS
+    // =====================================
+
+    public function activar(): bool
+    {
+        return $this->update(['activo' => true]);
+    }
+
+    public function desactivar(): bool
+    {
+        return $this->update(['activo' => false]);
+    }
+
+    public function calcularPrecioFinal(float $cantidad = 1): float
+    {
+        return $this->precio_con_iva * $cantidad;
     }
 }
